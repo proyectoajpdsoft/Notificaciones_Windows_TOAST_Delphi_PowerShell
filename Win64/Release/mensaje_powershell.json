@@ -1,0 +1,12 @@
+{
+  "titulo": "Consejos para una vida saludable",
+  "cuerpo": "Recuerda beber agua, al menos, cada hora. Es importante mantenerse hidratado.\nHay que beber agua aunque no tengamos sensación de sed, sobre todo en invierno.",
+  "tipo_notificacion": "powershell",
+  "duracion": "larga",
+  "pie_notificacion": "-- Notificación ProyectoA --",
+  "mostrar_boton_cerrar": true,
+  "accion_principal": "https://aprendeconpatricia.com/conoce-lo-comportamientos-corporales-balance-hidrico-como-hidratar-nuestro-cuerpo/",
+  "imagen": "D:\\logo.png",
+  "posicion_imagen": "izquierda",
+  "imagen_inline": "D:\\logopatriciapequeno.png"
+}

@@ -1,0 +1,19 @@
+[2025-08-17 19:45:01] [ERROR] El contenido del fichero de configuración no es un JSON válido.
+[2025-08-17 19:46:27] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-17 19:46:28] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-17 19:47:29] [INFO] Notificación duplicada ("Consejos para una vida saludable") dentro del límite de tiempo.
+[2025-08-17 19:47:55] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-17 19:47:55] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-17 19:49:24] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-17 19:49:25] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-17 19:51:10] [INFO] Notificación duplicada ("Consejos para una vida saludable") dentro del límite de tiempo.
+[2025-08-17 19:52:49] [INFO] Notificación duplicada ("Consejos para una vida saludable") dentro del límite de tiempo.
+[2025-08-17 19:52:59] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-17 19:52:59] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-17 19:54:00] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-17 19:54:00] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-17 19:55:08] [INFO] Notificación enviada (Tipo: normal).
+[2025-08-17 19:55:50] [INFO] Notificación enviada (Tipo: normal).
+[2025-08-17 19:56:05] [INFO] Notificación duplicada ("Salud del empleado") dentro del límite de tiempo.
+[2025-08-17 19:59:47] [INFO] Notificación duplicada ("Consejos para una vida saludable") dentro del límite de tiempo.
+[2025-08-17 19:59:54] [INFO] Notificación duplicada ("Salud del empleado") dentro del límite de tiempo.

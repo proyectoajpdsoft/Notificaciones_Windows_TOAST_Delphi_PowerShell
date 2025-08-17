@@ -1,0 +1,456 @@
+unit UnidadNotificacion;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.ShellAPI, Winapi.ShlObj, Winapi.ActiveX, Winapi.PropSys,
+  System.SysUtils, System.Classes, System.Notification, System.JSON,
+  System.IOUtils, System.NetEncoding, System.Win.ComObj, System.DateUtils,
+  System.Win.Registry,
+  Vcl.Forms, Vcl.ExtCtrls, Vcl.Controls;
+
+const
+  APP_ID = 'ProyectoA Notificaciones Windows';
+  APP_DISPLAY_NAME = 'ProyectoA Notificaciones';
+  MINUTOS_LIMITE_DUPLICADOS = 120; // Límite para considerar una notificación como duplicada.
+
+  // GUIDs y Claves de Propiedad necesarias para la integración con el Shell de Windows.
+  IID_IPersistFile: TGUID = '{0000010b-0000-0000-C000-000000000046}';
+  PKEY_AppUserModel_ID: TPropertyKey = (
+    fmtid: '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
+    pid: 5
+  );
+
+type
+  TformNotificacionesWindows = class(TForm)
+    CentroNotificaciones: TNotificationCenter;
+    Temporizador: TTimer;
+    procedure FormCreate(Sender: TObject);
+    procedure TemporizadorTimer(Sender: TObject);
+  private
+    FRutaArchivoLog: string;
+    FRutaArchivoConfig: string;
+    FRutaArchivoHistorial: string;
+
+    procedure CreateParams(var Params: TCreateParams); override;
+    procedure ConfigurarRegistroNotificaciones;
+    procedure EscribirLog(const Mensaje: string; EsError: Boolean = False);
+    procedure MostrarNotificacionDesdeJSON;
+    procedure MostrarNotificacionPowerShell(const Titulo, Cuerpo, RutaImagen: string; DatosJSON: TJSONObject);
+    procedure EjecutarComandoPowershell(const Script: string);
+    function HaSidoMostradaRecientemente(const ATitulo, ACuerpo: string): Boolean;
+    procedure RegistrarNotificacionEnHistorial(const ATitulo, ACuerpo: string);
+    procedure CrearAccesoDirectoConAppID;
+  end;
+
+var
+  formNotificacionesWindows: TformNotificacionesWindows;
+
+implementation
+
+{$R *.dfm}
+
+procedure TformNotificacionesWindows.CreateParams(var Params: TCreateParams);
+begin
+  // Este método se sobreescribe para eliminar el estilo WS_VISIBLE antes de que la
+  // ventana se cree, asegurando que el formulario nunca parpadee en la pantalla.
+  inherited CreateParams(Params);
+  Params.Style := Params.Style and not WS_VISIBLE;
+end;
+
+procedure TformNotificacionesWindows.FormCreate(Sender: TObject);
+begin
+  try
+    FRutaArchivoLog := ChangeFileExt(Application.ExeName, '.log');
+    FRutaArchivoHistorial := ChangeFileExt(Application.ExeName, '.historial.json');
+    ConfigurarRegistroNotificaciones;
+    CrearAccesoDirectoConAppID;
+
+    if ParamCount = 0 then
+    begin
+      EscribirLog('No se especificó un archivo JSON de configuración como parámetro de entrada.', True);
+      Application.Terminate;
+      Exit;
+    end;
+
+    FRutaArchivoConfig := ParamStr(1);
+    if not FileExists(FRutaArchivoConfig) then
+    begin
+      EscribirLog('El archivo de configuración "' + FRutaArchivoConfig + '" no existe.', True);
+      Application.Terminate;
+      Exit;
+    end;
+
+    // Usamos un temporizador corto para desacoplar la lógica principal del evento
+    // FormCreate, permitiendo que el bucle de mensajes de la VCL se inicie
+    // correctamente antes de terminar la aplicación.
+    Temporizador.Interval := 100;
+    Temporizador.Enabled := True;
+  except
+    on E: Exception do
+    begin
+      EscribirLog('Error fatal durante la inicialización: ' + E.Message, True);
+      Vcl.Forms.Application.Terminate;
+    end;
+  end;
+end;
+
+procedure TformNotificacionesWindows.ConfigurarRegistroNotificaciones;
+var
+  Reg: TRegistry;
+begin
+  Reg := TRegistry.Create;
+  try
+    Reg.RootKey := HKEY_CURRENT_USER;
+    if Reg.OpenKey('Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\' + APP_ID, True) then
+    begin
+      Reg.WriteString('DisplayName', APP_DISPLAY_NAME);
+      Reg.CloseKey;
+    end;
+  finally
+    Reg.Free;
+  end;
+end;
+
+procedure TformNotificacionesWindows.TemporizadorTimer(Sender: TObject);
+begin
+  Temporizador.Enabled := False;
+  try
+    MostrarNotificacionDesdeJSON;
+  finally
+    Application.Terminate;
+  end;
+end;
+
+procedure TformNotificacionesWindows.CrearAccesoDirectoConAppID;
+var
+  RutaAccesoDirecto, RutaMenuInicio: string;
+  ShellLink: IShellLinkW;
+  PropStore: IPropertyStore;
+  PersistFile: IPersistFile;
+  PropVariant: TPropVariant;
+  PathBuffer: array[0..MAX_PATH-1] of Char;
+begin
+  // Para que las notificaciones toast personalizadas funcionen correctamente, la aplicación
+  // debe tener un acceso directo en el Menú Inicio que contenga su AppUserModel.ID.
+  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer[0])) then
+    RutaMenuInicio := PathBuffer
+  else
+  begin
+    EscribirLog('Error: No se pudo obtener la ruta del Menú Inicio.', True);
+    Exit;
+  end;
+
+  RutaAccesoDirecto := TPath.Combine(RutaMenuInicio, APP_DISPLAY_NAME + '.lnk');
+
+  if FileExists(RutaAccesoDirecto) then
+    Exit; // El acceso directo ya existe, no se necesita hacer nada.
+
+  CoInitialize(nil);
+  try
+    if Succeeded(CoCreateInstance(CLSID_ShellLink, nil, CLSCTX_INPROC_SERVER, IID_IShellLinkW, ShellLink)) then
+    begin
+      ShellLink.SetPath(PChar(Application.ExeName));
+      ShellLink.SetWorkingDirectory(PChar(ExtractFilePath(Application.ExeName)));
+      ShellLink.SetDescription('Notificaciones de ' + APP_DISPLAY_NAME);
+
+      // Se asocia el AppUserModel.ID al acceso directo.
+      if Succeeded(ShellLink.QueryInterface(IID_IPropertyStore, PropStore)) then
+      begin
+        OleCheck(InitPropVariantFromString(APP_ID, PropVariant));
+        OleCheck(PropStore.SetValue(PKEY_AppUserModel_ID, PropVariant));
+        OleCheck(PropStore.Commit);
+        PropVariantClear(PropVariant);
+      end;
+
+      if Succeeded(ShellLink.QueryInterface(IID_IPersistFile, PersistFile)) then
+      begin
+        PersistFile.Save(PWideChar(RutaAccesoDirecto), True);
+        EscribirLog('Acceso directo con AppID creado en el Menú Inicio.');
+      end;
+    end
+    else
+    begin
+      EscribirLog('Error: No se pudo crear el objeto COM ShellLink.', True);
+    end;
+  finally
+    CoUninitialize;
+  end;
+end;
+
+procedure TformNotificacionesWindows.EscribirLog(const Mensaje: string; EsError: Boolean = False);
+var
+  ArchivoLog: TextFile;
+  Prefijo: string;
+begin
+  try
+    if EsError then
+      Prefijo := '[ERROR] '
+    else
+      Prefijo := '[INFO] ';
+
+    AssignFile(ArchivoLog, FRutaArchivoLog);
+    try
+      if FileExists(FRutaArchivoLog) then
+        Append(ArchivoLog)
+      else
+        Rewrite(ArchivoLog);
+      Writeln(ArchivoLog, Format('[%s] %s%s', [FormatDateTime('yyyy-mm-dd hh:nn:ss', Now), Prefijo, Mensaje]));
+    finally
+      CloseFile(ArchivoLog);
+    end;
+  except
+    // Se ignora cualquier error de escritura en el log para evitar que la aplicación falle.
+  end;
+end;
+
+procedure TformNotificacionesWindows.MostrarNotificacionDesdeJSON;
+var
+  ContenidoJSON: TStringList;
+  DatosJSON: TJSONObject;
+  Notificacion: TNotification;
+  Titulo, Cuerpo, TipoNotificacion, CuerpoParaMostrar: string;
+begin
+  ContenidoJSON := TStringList.Create;
+  try
+    ContenidoJSON.LoadFromFile(FRutaArchivoConfig, TEncoding.UTF8);
+    DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
+    if not Assigned(DatosJSON) then
+    begin
+      EscribirLog('El contenido del fichero de configuración no es un JSON válido.', True);
+      Exit;
+    end;
+
+    try
+      Titulo := DatosJSON.GetValue<string>('titulo');
+      Cuerpo := DatosJSON.GetValue<string>('cuerpo');
+
+      if HaSidoMostradaRecientemente(Titulo, Cuerpo) then
+      begin
+        EscribirLog(Format('Notificación duplicada ("%s") dentro del límite de tiempo. No se mostrará.', [Titulo]));
+        Exit;
+      end;
+
+      // Se reemplazan los marcadores de nueva línea para su correcta visualización.
+      CuerpoParaMostrar := StringReplace(Cuerpo, '\n', #13#10, [rfReplaceAll]);
+
+      TipoNotificacion := 'normal';
+      if DatosJSON.TryGetValue<string>('tipo_notificacion', TipoNotificacion) then
+        TipoNotificacion := LowerCase(TipoNotificacion);
+
+      if TipoNotificacion = 'powershell' then
+      begin
+        MostrarNotificacionPowerShell(Titulo, CuerpoParaMostrar, DatosJSON.GetValue<string>('imagen', ''), DatosJSON);
+      end
+      else
+      begin
+        Notificacion := CentroNotificaciones.CreateNotification;
+        try
+          Notificacion.Name := APP_ID;
+          Notificacion.Title := Titulo;
+          Notificacion.AlertBody := CuerpoParaMostrar;
+          CentroNotificaciones.PresentNotification(Notificacion);
+        finally
+          Notificacion.Free;
+        end;
+      end;
+
+      RegistrarNotificacionEnHistorial(Titulo, Cuerpo);
+      EscribirLog('Notificación enviada (Tipo: ' + TipoNotificacion + ').');
+    finally
+      DatosJSON.Free;
+    end;
+  finally
+    ContenidoJSON.Free;
+  end;
+end;
+
+procedure TformNotificacionesWindows.MostrarNotificacionPowerShell(const Titulo, Cuerpo, RutaImagen: string; DatosJSON: TJSONObject);
+var
+  ScriptPS, ToastTemplateXML, RutaImagenURI, PlacementTag, LaunchAttribute,
+  BotonesXML, AccionPrincipal, HintAttribute, RutaImagenInline,
+  RutaImagenInlineURI, InlineImageXML, PieNotificacion, PieXML, DurationAttribute: string;
+  EsGrande: Boolean;
+begin
+  // --- PREPARACIÓN DE VARIABLES ---
+
+  // 1. Imagen "Hero" (superior)
+  RutaImagenURI := '';
+  PlacementTag := '';
+  if (RutaImagen <> '') and FileExists(RutaImagen) then
+  begin
+    RutaImagenURI := 'file:///' + StringReplace(TPath.GetFullPath(RutaImagen), '\', '/', [rfReplaceAll]);
+    PlacementTag := 'appLogoOverride';
+    if SameText(DatosJSON.GetValue<string>('posicion_imagen', ''), 'arriba') then
+      PlacementTag := 'hero';
+  end;
+
+  // 2. Imagen "Inline" (en el cuerpo)
+  InlineImageXML := '';
+  RutaImagenInlineURI := '';
+  if DatosJSON.TryGetValue<string>('imagen_inline', RutaImagenInline) and FileExists(RutaImagenInline) then
+  begin
+    RutaImagenInlineURI := 'file:///' + StringReplace(TPath.GetFullPath(RutaImagenInline), '\', '/', [rfReplaceAll]);
+    InlineImageXML := '            <image src="$NotificationInlineImage"/>' + #13#10;
+  end;
+
+  // 3. Acciones y Botones
+  LaunchAttribute := '';
+  BotonesXML := '';
+  if DatosJSON.TryGetValue<string>('accion_principal', AccionPrincipal) and (AccionPrincipal <> '') then
+  begin
+    LaunchAttribute := ' launch="$ResourceToOpen" activationType="protocol"';
+    BotonesXML :=
+      '    <actions>' + #13#10 +
+      '        <action content="Abrir" arguments="$ResourceToOpen" activationType="protocol"/>' + #13#10 +
+      '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10 +
+      '    </actions>' + #13#10;
+  end;
+
+  // 4. Pie de Notificación
+  PieXML := '';
+  if DatosJSON.TryGetValue<string>('pie_notificacion', PieNotificacion) and (PieNotificacion <> '') then
+    PieXML := '            <text placement="attribution">$NotificationPie</text>' + #13#10;
+
+  // 5. Tamaño del Cuerpo (grande o normal)
+  EsGrande := DatosJSON.GetValue<Boolean>('grande', False);
+  if EsGrande then
+    HintAttribute := ' hint-maxLines="10"'
+  else
+    HintAttribute := '';
+
+  // 6. Duración
+  if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then
+    DurationAttribute := ' duration="long"'
+  else
+    DurationAttribute := '';
+
+  // --- CONSTRUCCIÓN DEL XML ---
+  ToastTemplateXML :=
+    '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
+    '    <visual>' + #13#10 +
+    '        <binding template="ToastGeneric">' + #13#10 +
+    '            <text>$NotificationTitle</text>' + #13#10 +
+    '            <text' + HintAttribute + '>$NotificationText</text>' + #13#10;
+
+  if RutaImagenURI <> '' then
+    ToastTemplateXML := ToastTemplateXML + '            <image placement="' + PlacementTag + '" src="$NotificationImage"/>' + #13#10;
+
+  ToastTemplateXML := ToastTemplateXML +
+                 InlineImageXML + // Se añade la imagen inline
+                 PieXML +         // Se añade el pie de notificación
+    '        </binding>' + #13#10 +
+    '    </visual>' + #13#10 +
+    BotonesXML +
+    '</toast>';
+
+  // --- CONSTRUCCIÓN DEL SCRIPT DE POWERSHELL ---
+  ScriptPS :=
+    '$NotificationTitle = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +
+    '$NotificationText = ''' + Cuerpo.Replace('''', '''''') + ''';' + #13#10 +
+    '$NotificationImage = ''' + RutaImagenURI.Replace('''', '''''') + ''';' + #13#10 +
+    '$NotificationInlineImage = ''' + RutaImagenInlineURI.Replace('''', '''''') + ''';' + #13#10 +
+    '$NotificationPie = ''' + PieNotificacion.Replace('''', '''''') + ''';' + #13#10 +
+    '$ResourceToOpen = ''' + AccionPrincipal.Replace('''', '''''') + ''';' + #13#10 +
+    '$AppId = ''' + APP_ID + ''';' + #13#10 +
+    '$ToastTemplate = @"' + #13#10 + ToastTemplateXML + #13#10 + '"@' + #13#10 +
+    '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +
+    '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +
+    '$ToastXml = New-Object Windows.Data.Xml.Dom.XmlDocument;' + #13#10 +
+    '$ToastXml.LoadXml($ToastTemplate);' + #13#10 +
+    '$Toast = [Windows.UI.Notifications.ToastNotification]::new($ToastXml);' + #13#10 +
+    '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($Toast);';
+
+  EjecutarComandoPowershell(ScriptPS);
+end;
+
+procedure TformNotificacionesWindows.EjecutarComandoPowershell(const Script: string);
+var
+  ComandoBase64, ComandoCompleto: string;
+  SI: TStartupInfo;
+  PI: TProcessInformation;
+begin
+  ComandoBase64 := TNetEncoding.Base64.EncodeBytesToString(TEncoding.Unicode.GetBytes(Script));
+  ComandoCompleto := 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + ComandoBase64;
+  EscribirLog('Ejecutando PowerShell para mostrar notificación...');
+  ZeroMemory(@SI, SizeOf(SI));
+  SI.cb := SizeOf(SI);
+  SI.dwFlags := STARTF_USESHOWWINDOW;
+  SI.wShowWindow := SW_HIDE;
+  ZeroMemory(@PI, SizeOf(PI));
+  if not CreateProcess(nil, PChar(ComandoCompleto), nil, nil, False, CREATE_NO_WINDOW, nil, nil, SI, PI) then
+  begin
+    EscribirLog('Error al ejecutar PowerShell: ' + SysErrorMessage(GetLastError), True);
+    Exit;
+  end;
+  try
+    WaitForSingleObject(PI.hProcess, 5000);
+  finally
+    CloseHandle(PI.hProcess);
+    CloseHandle(PI.hThread);
+  end;
+end;
+
+function TformNotificacionesWindows.HaSidoMostradaRecientemente(const ATitulo, ACuerpo: string): Boolean;
+var
+  Historial: TJSONArray;
+  Item: TJSONValue;
+  FechaNotificacion: TDateTime;
+  FS: TFormatSettings;
+begin
+  Result := False;
+  if not FileExists(FRutaArchivoHistorial) then Exit;
+  FS := TFormatSettings.Create;
+  FS.ShortDateFormat := 'yyyy-mm-dd';
+  FS.DateSeparator := '-';
+  FS.TimeSeparator := ':';
+  Historial := nil;
+  try
+    Historial := TJSONObject.ParseJSONValue(TFile.ReadAllText(FRutaArchivoHistorial)) as TJSONArray;
+    if not Assigned(Historial) then Exit;
+    for Item in Historial do
+    begin
+      if (Item is TJSONObject) and
+         SameText((Item as TJSONObject).GetValue<string>('titulo', ''), ATitulo) and
+         SameText((Item as TJSONObject).GetValue<string>('cuerpo', ''), ACuerpo) then
+      begin
+        if TryStrToDateTime((Item as TJSONObject).GetValue<string>('fecha', ''), FechaNotificacion, FS) then
+        begin
+          if MinutesBetween(Now, FechaNotificacion) <= MINUTOS_LIMITE_DUPLICADOS then
+          begin
+            Result := True;
+            Exit;
+          end;
+        end;
+      end;
+    end;
+  finally
+    if Assigned(Historial) then
+      Historial.Free;
+  end;
+end;
+
+procedure TformNotificacionesWindows.RegistrarNotificacionEnHistorial(const ATitulo, ACuerpo: string);
+var
+  Historial: TJSONArray;
+  NuevaNotificacion: TJSONObject;
+begin
+  Historial := nil;
+  try
+    if FileExists(FRutaArchivoHistorial) then
+      Historial := TJSONObject.ParseJSONValue(TFile.ReadAllText(FRutaArchivoHistorial)) as TJSONArray;
+    if not Assigned(Historial) then
+      Historial := TJSONArray.Create;
+    NuevaNotificacion := TJSONObject.Create;
+    NuevaNotificacion.AddPair('titulo', ATitulo);
+    NuevaNotificacion.AddPair('cuerpo', ACuerpo);
+    NuevaNotificacion.AddPair('fecha', FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+    Historial.AddElement(NuevaNotificacion);
+    TFile.WriteAllText(FRutaArchivoHistorial, Historial.ToString);
+  finally
+    if Assigned(Historial) then
+      Historial.Free;
+  end;
+end;
+
+end.
