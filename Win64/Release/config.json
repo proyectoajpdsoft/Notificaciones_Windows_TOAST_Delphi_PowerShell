@@ -1,1 +1,1 @@
-{"app_id":"ProyectoA.Notificaciones","app_display_name":"Notificaciones de ProyectoA","minutos_limite_duplicados":120,"icono_notificacion":""}
+{"app_id":"ProyectoA.Notificaciones","app_display_name":"Notificaciones de ProyectoA","minutos_limite_duplicados":120,"icono_notificacion":"","ruta_xml_template":"notificacion_template.xml"}

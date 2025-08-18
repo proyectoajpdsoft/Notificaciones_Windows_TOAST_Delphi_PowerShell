@@ -98,7 +98,7 @@ begin
   except
     on E: Exception do
     begin
-      EscribirLog('Error fatal durante la inicialización: ' + E.Message, True);
+      EscribirLog('Error durante la inicialización: ' + E.Message, True);
       Vcl.Forms.Application.Terminate;
     end;
   end;
@@ -114,11 +114,11 @@ begin
 
   if not FileExists(RutaConfig) then
   begin
-    EscribirLog('No se encontró fichero de configuración. Creando "config.json" por defecto.');
+    EscribirLog('No se encontró el fichero de configuración. Se crea "config.json" por defecto.');
     DatosJSON := TJSONObject.Create;
     try
       DatosJSON.AddPair('app_id', 'ProyectoA.Notificaciones');
-      DatosJSON.AddPair('app_display_name', 'Notificaciones de ProyectoA');
+      DatosJSON.AddPair('app_display_name', 'ProyectoA Notificaciones');
       DatosJSON.AddPair('minutos_limite_duplicados', TJSONNumber.Create(120));
       DatosJSON.AddPair('icono_notificacion', '');
       DatosJSON.AddPair('ruta_xml_template', 'notificacion_template.xml');
@@ -144,7 +144,7 @@ begin
 
   if not FileExists(FConfig.RutaXmlTemplate) then
   begin
-    EscribirLog('No se encontró fichero de plantilla XML. Creando por defecto.');
+    EscribirLog('No se encontró el fichero de plantilla XML. Se crea "' + FConfig.RutaXmlTemplate + '" por defecto.');
     TemplateContent := TStringList.Create;
     try
       TemplateContent.Add('<toast##ToastAttributes##>');
@@ -178,6 +178,7 @@ begin
     begin
       Reg.WriteString('DisplayName', FConfig.AppDisplayName);
       Reg.CloseKey;
+      EscribirLog('Se crea clave de registro Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\' + FConfig.AppID);
     end;
   finally
     Reg.Free;
@@ -265,7 +266,7 @@ begin
     DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
     if not Assigned(DatosJSON) then
     begin
-      EscribirLog('El contenido del fichero de mensaje no es un JSON válido.', True);
+      EscribirLog('El contenido del fichero de mensaje no es un JSON válido. Revise la sintaxis.', True);
       Exit;
     end;
     try
@@ -273,7 +274,7 @@ begin
       Cuerpo := DatosJSON.GetValue<string>('cuerpo');
       if HaSidoMostradaRecientemente(Titulo, Cuerpo) then
       begin
-        EscribirLog(Format('Notificación duplicada ("%s") dentro del límite de tiempo.', [Titulo]));
+        EscribirLog(Format('Notificación duplicada ("%s") dentro del límite de tiempo. No se mostrará.', [Titulo]));
         Exit;
       end;
       TipoNotificacion := DatosJSON.GetValue<string>('tipo_notificacion', 'normal');
@@ -292,7 +293,7 @@ begin
         end;
       end;
       RegistrarNotificacionEnHistorial(Titulo, Cuerpo);
-      EscribirLog('Notificación enviada (Tipo: ' + TipoNotificacion + ').');
+      EscribirLog('Notificación enviada para mostrar, de tipo: ' + TipoNotificacion + ' y asunto: ' + Titulo);
     finally
       DatosJSON.Free;
     end;
@@ -310,30 +311,41 @@ var
 begin
   // --- PREPARACIÓN DE VARIABLES DE POWERSHELL ---
   RutaImagenLogo := DatosJSON.GetValue<string>('imagen_logo', '');
-  if (RutaImagenLogo <> '') and FileExists(RutaImagenLogo) then RutaImagenLogo := TPath.GetFullPath(RutaImagenLogo) else RutaImagenLogo := '';
+  if (RutaImagenLogo <> '') and FileExists(RutaImagenLogo) then
+    RutaImagenLogo := TPath.GetFullPath(RutaImagenLogo) else RutaImagenLogo := '';
   RutaImagenArriba := DatosJSON.GetValue<string>('imagen_arriba', '');
-  if (RutaImagenArriba <> '') and FileExists(RutaImagenArriba) then RutaImagenArriba := TPath.GetFullPath(RutaImagenArriba) else RutaImagenArriba := '';
+  if (RutaImagenArriba <> '') and FileExists(RutaImagenArriba) then
+    RutaImagenArriba := TPath.GetFullPath(RutaImagenArriba) else RutaImagenArriba := '';
   RutaImagenInline := DatosJSON.GetValue<string>('imagen_inline', '');
-  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then RutaImagenInline := TPath.GetFullPath(RutaImagenInline) else RutaImagenInline := '';
+  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then
+    RutaImagenInline := TPath.GetFullPath(RutaImagenInline) else RutaImagenInline := '';
   PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
   AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
 
   // --- PREPARACIÓN DE FRAGMENTOS XML (O CADENAS VACÍAS SI NO APLICAN) ---
   LaunchAttribute := '';
-  if AccionPrincipal <> '' then LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
-  if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then DurationAttribute := ' duration="long"' else DurationAttribute := '';
+  if AccionPrincipal <> '' then
+    LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
+  if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then
+    DurationAttribute := ' duration="long"' else DurationAttribute := '';
   LogoImageXML := '';
-  if RutaImagenLogo <> '' then LogoImageXML := '##LogoImageXML##';
+  if RutaImagenLogo <> '' then
+    LogoImageXML := '##LogoImageXML##';
   HeroImageXML := '';
-  if RutaImagenArriba <> '' then HeroImageXML := '##HeroImageXML##';
+  if RutaImagenArriba <> '' then
+    HeroImageXML := '##HeroImageXML##';
   InlineImageXML := '';
-  if RutaImagenInline <> '' then InlineImageXML := '##InlineImageXML##';
+  if RutaImagenInline <> '' then
+    InlineImageXML := '##InlineImageXML##';
   PieXML := '';
-  if PieNotificacion <> '' then PieXML := '##PieXML##';
+  if PieNotificacion <> '' then
+    PieXML := '##PieXML##';
   AccionPrincipalXML := '';
-  if AccionPrincipal <> '' then AccionPrincipalXML := '<action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>';
+  if AccionPrincipal <> '' then
+    AccionPrincipalXML := '<action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>';
   BotonCerrarXML := '';
-  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then BotonCerrarXML := '<action content="Cerrar" arguments="dismiss" activationType="system"/>';
+  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then
+    BotonCerrarXML := '<action content="Cerrar" arguments="dismiss" activationType="system"/>';
 
   // --- LECTURA Y REEMPLAZO EN LA PLANTILLA ---
   ToastTemplateXML := TFile.ReadAllText(FConfig.RutaXmlTemplate);

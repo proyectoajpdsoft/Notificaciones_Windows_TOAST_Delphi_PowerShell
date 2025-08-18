@@ -1,6 +1,6 @@
 {
   "titulo": "Informe anual disponible",
-  "cuerpo": "Ya se encuentra disponible el informe anual de ventas. Puede consultarlo pulsando en Abrir.\nLas ventas han aumentado un 15%.",
+  "cuerpo": "Ya se encuentra disponible el informe anual de ventas. Puede consultarla pulsando en Abrir.\nLas ventas han aumentado un 15%.",
   "tipo_notificacion": "powershell",
   "duracion": "larga",
   "pie_notificacion": "-- Notificación ProyectoA --",

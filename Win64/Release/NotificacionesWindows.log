@@ -9,3 +9,10 @@
 [2025-08-18 19:32:10] [INFO] Ejecutando PowerShell para mostrar notificación...
 [2025-08-18 19:32:11] [INFO] Notificación enviada (Tipo: powershell).
 [2025-08-18 19:34:20] [INFO] Notificación enviada (Tipo: normal).
+[2025-08-18 19:53:30] [INFO] Notificación duplicada ("Salud del empleado") dentro del límite de tiempo.
+[2025-08-18 19:53:44] [INFO] Notificación duplicada ("Salud del empleado") dentro del límite de tiempo.
+[2025-08-18 19:54:36] [INFO] Notificación duplicada ("Salud del empleado") dentro del límite de tiempo.
+[2025-08-18 19:54:44] [INFO] Ejecutando PowerShell para mostrar notificación...
+[2025-08-18 19:54:44] [INFO] Notificación enviada (Tipo: powershell).
+[2025-08-18 20:04:27] [INFO] Se crea clave de registro Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\ProyectoA.Notificaciones
+[2025-08-18 20:04:27] [INFO] Notificación duplicada ("Informe anual disponible") dentro del límite de tiempo. No se mostrará.
