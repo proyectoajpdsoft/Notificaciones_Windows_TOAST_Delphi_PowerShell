@@ -6,7 +6,7 @@ uses
   Winapi.Windows, Winapi.ShellAPI, Winapi.ShlObj, Winapi.ActiveX, Winapi.PropSys,
   System.SysUtils, System.Classes, System.Notification, System.JSON,
   System.IOUtils, System.NetEncoding, System.Win.ComObj, System.DateUtils,
-  System.Win.Registry,
+  System.Win.Registry, System.StrUtils,
   Vcl.Forms, Vcl.ExtCtrls, Vcl.Controls;
 
 const
@@ -217,17 +217,35 @@ end;
 
 procedure TformNotificacionesWindows.MostrarNotificacionPowerShell(const Titulo, Cuerpo: string; DatosJSON: TJSONObject);
 var
-  ScriptPS, ToastTemplateXML, LaunchAttribute, DurationAttribute,
-  AccionPrincipalXML, BotonCerrarXML, PieXML,
-  HeroImageXML, InlineImageXML, BodyTextXML: string;
-  LineasCuerpo: TStringDynArray;
-  I: Integer;
+  ScriptPS, ToastTemplateXML, LaunchAttribute, DurationAttribute, AccionPrincipalXML,
+  BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, LogoImageXML, CuerpoPS,
+  RutaImagenLogo, RutaImagenArriba, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
 begin
-  // --- PREPARACIÓN DE VARIABLES DEL XML ---
+  // --- PREPARACIÓN DE VARIABLES DE POWERSHELL (MANEJO SEGURO DE RUTAS) ---
+  RutaImagenLogo := DatosJSON.GetValue<string>('imagen_logo', '');
+  if (RutaImagenLogo <> '') and FileExists(RutaImagenLogo) then
+    RutaImagenLogo := TPath.GetFullPath(RutaImagenLogo)
+  else
+    RutaImagenLogo := '';
 
-  // Atributos del tag <toast>
+  RutaImagenArriba := DatosJSON.GetValue<string>('imagen_arriba', '');
+  if (RutaImagenArriba <> '') and FileExists(RutaImagenArriba) then
+    RutaImagenArriba := TPath.GetFullPath(RutaImagenArriba)
+  else
+    RutaImagenArriba := '';
+
+  RutaImagenInline := DatosJSON.GetValue<string>('imagen_inline', '');
+  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then
+    RutaImagenInline := TPath.GetFullPath(RutaImagenInline)
+  else
+    RutaImagenInline := '';
+
+  PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
+  AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
+
+  // --- PREPARACIÓN DE FRAGMENTOS XML ---
   LaunchAttribute := '';
-  if DatosJSON.GetValue<string>('accion_principal', '') <> '' then
+  if AccionPrincipal <> '' then
     LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
 
   if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then
@@ -235,28 +253,24 @@ begin
   else
     DurationAttribute := '';
 
-  // Contenido del tag <visual>
+  LogoImageXML := '';
+  if RutaImagenLogo <> '' then
+    LogoImageXML := '            <image placement="appLogoOverride" src="$ImagenLogo"/>' + #13#10;
+
   HeroImageXML := '';
-  if SameText(DatosJSON.GetValue<string>('posicion_imagen', ''), 'arriba') and FileExists(DatosJSON.GetValue<string>('imagen', '')) then
-    HeroImageXML := '            <image placement="hero" src="$ImagenHero"/>' + #13#10;
+  if RutaImagenArriba <> '' then
+    HeroImageXML := '            <image placement="hero" src="$ImagenArriba"/>' + #13#10;
 
   InlineImageXML := '';
-  if FileExists(DatosJSON.GetValue<string>('imagen_inline', '')) then
+  if RutaImagenInline <> '' then
     InlineImageXML := '            <image src="$ImagenInline"/>' + #13#10;
 
   PieXML := '';
-  if DatosJSON.GetValue<string>('pie_notificacion', '') <> '' then
+  if PieNotificacion <> '' then
     PieXML := '            <text placement="attribution">$PieNotificacion</text>' + #13#10;
 
-  // El cuerpo ahora soporta múltiples líneas de forma nativa.
-  LineasCuerpo := SplitString(Cuerpo, '\n');
-  BodyTextXML := '';
-  for I := 0 to High(LineasCuerpo) do
-    BodyTextXML := BodyTextXML + '            <text>$Cuerpo[' + IntToStr(I) + ']</text>' + #13#10;
-
-  // Contenido del tag <actions>
   AccionPrincipalXML := '';
-  if DatosJSON.GetValue<string>('accion_principal', '') <> '' then
+  if AccionPrincipal <> '' then
     AccionPrincipalXML := '        <action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>' + #13#10;
 
   BotonCerrarXML := '';
@@ -268,35 +282,31 @@ begin
     '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
     '    <visual>' + #13#10 +
     '        <binding template="ToastGeneric">' + #13#10 +
+                 LogoImageXML +
                  HeroImageXML +
     '            <text>$Titulo</text>' + #13#10 +
-                 BodyTextXML +
+    '            <text>$Cuerpo</text>' + #13#10 +
                  InlineImageXML +
                  PieXML +
     '        </binding>' + #13#10 +
     '    </visual>';
 
   if (AccionPrincipalXML <> '') or (BotonCerrarXML <> '') then
-  begin
-    ToastTemplateXML := ToastTemplateXML + #13#10 +
-      '    <actions>' + #13#10 +
-           AccionPrincipalXML +
-           BotonCerrarXML +
-      '    </actions>';
-  end;
-
+    ToastTemplateXML := ToastTemplateXML + #13#10 + '    <actions>' + #13#10 + AccionPrincipalXML + BotonCerrarXML + '    </actions>';
   ToastTemplateXML := ToastTemplateXML + #13#10 + '</toast>';
 
   // --- CONSTRUCCIÓN DEL SCRIPT DE POWERSHELL ---
-  ScriptPS := '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10;
-  for I := 0 to High(LineasCuerpo) do
-    ScriptPS := ScriptPS + '$Cuerpo['+IntToStr(I)+'] = ''' + LineasCuerpo[I].Replace('''', '''''') + ''';' + #13#10;
+  CuerpoPS := StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]);
+  CuerpoPS := StringReplace(CuerpoPS, '"', '`"', [rfReplaceAll]);
 
-  ScriptPS := ScriptPS +
-    '$ImagenHero = ''' + TPath.GetFullPath(DatosJSON.GetValue<string>('imagen', '')).Replace('''', '''''') + ''';' + #13#10 +
-    '$ImagenInline = ''' + TPath.GetFullPath(DatosJSON.GetValue<string>('imagen_inline', '')).Replace('''', '''''') + ''';' + #13#10 +
-    '$PieNotificacion = ''' + DatosJSON.GetValue<string>('pie_notificacion', '').Replace('''', '''''') + ''';' + #13#10 +
-    '$AccionPrincipal = ''' + DatosJSON.GetValue<string>('accion_principal', '').Replace('''', '''''') + ''';' + #13#10 +
+  ScriptPS :=
+    '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +
+    '$Cuerpo = "' + CuerpoPS + '";' + #13#10 +
+    '$ImagenLogo = ''' + RutaImagenLogo.Replace('''', '''''') + ''';' + #13#10 +
+    '$ImagenArriba = ''' + RutaImagenArriba.Replace('''', '''''') + ''';' + #13#10 +
+    '$ImagenInline = ''' + RutaImagenInline.Replace('''', '''''') + ''';' + #13#10 +
+    '$PieNotificacion = ''' + PieNotificacion.Replace('''', '''''') + ''';' + #13#10 +
+    '$AccionPrincipal = ''' + AccionPrincipal.Replace('''', '''''') + ''';' + #13#10 +
     '$AppId = ''' + APP_ID + ''';' + #13#10 +
     '$ToastTemplate = @"' + #13#10 + ToastTemplateXML + #13#10 + '"@' + #13#10 +
     '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +

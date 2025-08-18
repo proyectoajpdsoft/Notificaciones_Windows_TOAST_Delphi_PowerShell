@@ -6,7 +6,7 @@ uses
   Winapi.Windows, Winapi.ShellAPI, Winapi.ShlObj, Winapi.ActiveX, Winapi.PropSys,
   System.SysUtils, System.Classes, System.Notification, System.JSON,
   System.IOUtils, System.NetEncoding, System.Win.ComObj, System.DateUtils,
-  System.Win.Registry,
+  System.Win.Registry, System.StrUtils,
   Vcl.Forms, Vcl.ExtCtrls, Vcl.Controls;
 
 const
@@ -121,7 +121,7 @@ var
   PropVariant: TPropVariant;
   PathBuffer: array[0..MAX_PATH-1] of Char;
 begin
-  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer[0])) then
+  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer)) then
     RutaMenuInicio := PathBuffer
   else
     Exit;
@@ -218,13 +218,26 @@ end;
 procedure TformNotificacionesWindows.MostrarNotificacionPowerShell(const Titulo, Cuerpo: string; DatosJSON: TJSONObject);
 var
   ScriptPS, ToastTemplateXML, LaunchAttribute, DurationAttribute, AccionPrincipalXML,
-  BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, BodyTextXML: string;
-  LineasCuerpo: TStringList; // <<< CORRECCIÓN: Usar TStringList en lugar de TStringDynArray
-  I: Integer;
+  BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, CuerpoPS,
+  RutaImagenHero, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
 begin
-  // --- PREPARACIÓN DE VARIABLES DEL XML ---
+  RutaImagenHero := DatosJSON.GetValue<string>('imagen', '');
+  if (RutaImagenHero <> '') and FileExists(RutaImagenHero) then
+    RutaImagenHero := TPath.GetFullPath(RutaImagenHero)
+  else
+    RutaImagenHero := '';
+
+  RutaImagenInline := DatosJSON.GetValue<string>('imagen_inline', '');
+  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then
+    RutaImagenInline := TPath.GetFullPath(RutaImagenInline)
+  else
+    RutaImagenInline := '';
+
+  PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
+  AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
+
   LaunchAttribute := '';
-  if DatosJSON.GetValue<string>('accion_principal', '') <> '' then
+  if AccionPrincipal <> '' then
     LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
 
   if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then
@@ -233,77 +246,61 @@ begin
     DurationAttribute := '';
 
   HeroImageXML := '';
-  if SameText(DatosJSON.GetValue<string>('posicion_imagen', ''), 'arriba') and FileExists(DatosJSON.GetValue<string>('imagen', '')) then
-    HeroImageXML := '            <image placement="hero" src="$ImagenHero"/>' + #13#10;
+  if RutaImagenHero <> '' then
+  begin
+    if SameText(DatosJSON.GetValue<string>('posicion_imagen', 'izquierda'), 'arriba') then
+      HeroImageXML := '            <image placement="hero" src="$ImagenHero"/>' + #13#10
+    else
+      HeroImageXML := '            <image placement="appLogoOverride" src="$ImagenHero"/>' + #13#10;
+  end;
 
   InlineImageXML := '';
-  if FileExists(DatosJSON.GetValue<string>('imagen_inline', '')) then
+  if RutaImagenInline <> '' then
     InlineImageXML := '            <image src="$ImagenInline"/>' + #13#10;
 
   PieXML := '';
-  if DatosJSON.GetValue<string>('pie_notificacion', '') <> '' then
+  if PieNotificacion <> '' then
     PieXML := '            <text placement="attribution">$PieNotificacion</text>' + #13#10;
 
-  // <<< CORRECCIÓN: Usar TStringList para manejar el cuerpo multilínea de forma robusta >>>
-  LineasCuerpo := TStringList.Create;
-  try
-    LineasCuerpo.Text := Cuerpo;
-    BodyTextXML := '';
-    for I := 0 to LineasCuerpo.Count - 1 do
-      BodyTextXML := BodyTextXML + '            <text>$Cuerpo[' + IntToStr(I) + ']</text>' + #13#10;
-  finally
-    LineasCuerpo.Free;
-  end;
-
   AccionPrincipalXML := '';
-  if DatosJSON.GetValue<string>('accion_principal', '') <> '' then
+  if AccionPrincipal <> '' then
     AccionPrincipalXML := '        <action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>' + #13#10;
 
   BotonCerrarXML := '';
   if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then
     BotonCerrarXML := '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10;
 
-  // --- CONSTRUCCIÓN DEL XML COMPLETO ---
   ToastTemplateXML :=
     '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
     '    <visual>' + #13#10 +
     '        <binding template="ToastGeneric">' + #13#10 +
                  HeroImageXML +
     '            <text>$Titulo</text>' + #13#10 +
-                 BodyTextXML +
+    '            <text>$Cuerpo</text>' + #13#10 +
                  InlineImageXML +
                  PieXML +
     '        </binding>' + #13#10 +
     '    </visual>';
 
   if (AccionPrincipalXML <> '') or (BotonCerrarXML <> '') then
-  begin
-    ToastTemplateXML := ToastTemplateXML + #13#10 +
-      '    <actions>' + #13#10 +
-           AccionPrincipalXML +
-           BotonCerrarXML +
-      '    </actions>';
-  end;
+    ToastTemplateXML := ToastTemplateXML + #13#10 + '    <actions>' + #13#10 + AccionPrincipalXML + BotonCerrarXML + '    </actions>';
   ToastTemplateXML := ToastTemplateXML + #13#10 + '</toast>';
 
-  // --- CONSTRUCCIÓN DEL SCRIPT DE POWERSHELL ---
-  ScriptPS := '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10;
+  // <<< CORRECCIÓN DEFINITIVA: Se prepara el cuerpo para PowerShell >>>
+  // 1. Reemplazar \n con el carácter de escape `n de PowerShell.
+  // 2. Escapar las comillas simples ' por '''.
+  // 3. Escapar las comillas dobles " por `" para poder usar una cadena con comillas dobles.
+  CuerpoPS := StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]);
+  CuerpoPS := StringReplace(CuerpoPS, '"', '`"', [rfReplaceAll]);
 
-  // <<< CORRECCIÓN: Iterar sobre TStringList y usar Format para evitar errores de sintaxis >>>
-  LineasCuerpo := TStringList.Create;
-  try
-    LineasCuerpo.Text := Cuerpo;
-    for I := 0 to LineasCuerpo.Count - 1 do
-      ScriptPS := ScriptPS + Format('$Cuerpo[%d] = ''%s'';'#13#10, [I, LineasCuerpo[I].Replace('''', '''''')]);
-  finally
-    LineasCuerpo.Free;
-  end;
-
-  ScriptPS := ScriptPS +
-    '$ImagenHero = ''' + TPath.GetFullPath(DatosJSON.GetValue<string>('imagen', '')).Replace('''', '''''') + ''';' + #13#10 +
-    '$ImagenInline = ''' + TPath.GetFullPath(DatosJSON.GetValue<string>('imagen_inline', '')).Replace('''', '''''') + ''';' + #13#10 +
-    '$PieNotificacion = ''' + DatosJSON.GetValue<string>('pie_notificacion', '').Replace('''', '''''') + ''';' + #13#10 +
-    '$AccionPrincipal = ''' + DatosJSON.GetValue<string>('accion_principal', '').Replace('''', '''''') + ''';' + #13#10 +
+  ScriptPS :=
+    '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +
+    // Se usa una cadena con comillas dobles para que PowerShell interprete `n como salto de línea
+    '$Cuerpo = "' + CuerpoPS + '";' + #13#10 +
+    '$ImagenHero = ''' + RutaImagenHero.Replace('''', '''''') + ''';' + #13#10 +
+    '$ImagenInline = ''' + RutaImagenInline.Replace('''', '''''') + ''';' + #13#10 +
+    '$PieNotificacion = ''' + PieNotificacion.Replace('''', '''''') + ''';' + #13#10 +
+    '$AccionPrincipal = ''' + AccionPrincipal.Replace('''', '''''') + ''';' + #13#10 +
     '$AppId = ''' + APP_ID + ''';' + #13#10 +
     '$ToastTemplate = @"' + #13#10 + ToastTemplateXML + #13#10 + '"@' + #13#10 +
     '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +

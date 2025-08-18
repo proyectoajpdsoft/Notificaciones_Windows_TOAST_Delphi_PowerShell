@@ -10,10 +10,7 @@ uses
   Vcl.Forms, Vcl.ExtCtrls, Vcl.Controls;
 
 const
-  APP_ID = 'ProyectoA Notificaciones Windows';
-  APP_DISPLAY_NAME = 'ProyectoA Notificaciones';
-  MINUTOS_LIMITE_DUPLICADOS = 120;
-
+  // <<< CORRECCIÓN: Se restauran las constantes de GUIDs y Propiedades >>>
   IID_IPersistFile: TGUID = '{0000010b-0000-0000-C000-000000000046}';
   PKEY_AppUserModel_ID: TPropertyKey = (
     fmtid: '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
@@ -21,15 +18,25 @@ const
   );
 
 type
+  TAppConfig = record
+    AppID: string;
+    AppDisplayName: string;
+    MinutosLimiteDuplicados: Integer;
+    IconoNotificacion: string;
+  end;
+
   TformNotificacionesWindows = class(TForm)
     CentroNotificaciones: TNotificationCenter;
     Temporizador: TTimer;
     procedure FormCreate(Sender: TObject);
     procedure TemporizadorTimer(Sender: TObject);
   private
+    FConfig: TAppConfig;
     FRutaArchivoLog: string;
-    FRutaArchivoConfig: string;
+    FRutaArchivoMensaje: string;
     FRutaArchivoHistorial: string;
+
+    procedure CargarConfiguracion;
     procedure CreateParams(var Params: TCreateParams); override;
     procedure ConfigurarRegistroNotificaciones;
     procedure EscribirLog(const Mensaje: string; EsError: Boolean = False);
@@ -59,21 +66,27 @@ begin
   try
     FRutaArchivoLog := ChangeFileExt(Application.ExeName, '.log');
     FRutaArchivoHistorial := ChangeFileExt(Application.ExeName, '.historial.json');
+
+    CargarConfiguracion;
     ConfigurarRegistroNotificaciones;
-    CrearAccesoDirectoConAppID;
+
     if ParamCount = 0 then
     begin
-      EscribirLog('No se especificó un archivo JSON de configuración como parámetro.', True);
+      EscribirLog('No se especificó un archivo JSON de mensaje como parámetro.', True);
       Application.Terminate;
       Exit;
     end;
-    FRutaArchivoConfig := ParamStr(1);
-    if not FileExists(FRutaArchivoConfig) then
+
+    FRutaArchivoMensaje := ParamStr(1);
+    if not FileExists(FRutaArchivoMensaje) then
     begin
-      EscribirLog('El archivo de configuración "' + FRutaArchivoConfig + '" no existe.', True);
+      EscribirLog('El archivo de mensaje "' + FRutaArchivoMensaje + '" no existe.', True);
       Application.Terminate;
       Exit;
     end;
+
+    CrearAccesoDirectoConAppID;
+
     Temporizador.Interval := 100;
     Temporizador.Enabled := True;
   except
@@ -85,6 +98,49 @@ begin
   end;
 end;
 
+procedure TformNotificacionesWindows.CargarConfiguracion;
+var
+  RutaConfig: string;
+  ContenidoJSON: TStringList;
+  DatosJSON: TJSONObject;
+begin
+  RutaConfig := TPath.Combine(ExtractFilePath(Application.ExeName), 'config.json');
+
+  if not FileExists(RutaConfig) then
+  begin
+    EscribirLog('No se encontró fichero de configuración. Creando "config.json" por defecto.');
+    DatosJSON := TJSONObject.Create;
+    try
+      DatosJSON.AddPair('app_id', 'ProyectoA.Notificaciones');
+      DatosJSON.AddPair('app_display_name', 'Notificaciones de ProyectoA');
+      DatosJSON.AddPair('minutos_limite_duplicados', TJSONNumber.Create(120));
+      DatosJSON.AddPair('icono_notificacion', '');
+      TFile.WriteAllText(RutaConfig, DatosJSON.ToJSON);
+    finally
+      DatosJSON.Free;
+    end;
+  end;
+
+  ContenidoJSON := TStringList.Create;
+  try
+    ContenidoJSON.LoadFromFile(RutaConfig, TEncoding.UTF8);
+    DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
+    if Assigned(DatosJSON) then
+    begin
+      try
+        FConfig.AppID := DatosJSON.GetValue<string>('app_id', 'Default.AppID');
+        FConfig.AppDisplayName := DatosJSON.GetValue<string>('app_display_name', 'Default Display Name');
+        FConfig.MinutosLimiteDuplicados := DatosJSON.GetValue<Integer>('minutos_limite_duplicados', 120);
+        FConfig.IconoNotificacion := DatosJSON.GetValue<string>('icono_notificacion', '');
+      finally
+        DatosJSON.Free;
+      end;
+    end;
+  finally
+    ContenidoJSON.Free;
+  end;
+end;
+
 procedure TformNotificacionesWindows.ConfigurarRegistroNotificaciones;
 var
   Reg: TRegistry;
@@ -92,9 +148,9 @@ begin
   Reg := TRegistry.Create;
   try
     Reg.RootKey := HKEY_CURRENT_USER;
-    if Reg.OpenKey('Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\' + APP_ID, True) then
+    if Reg.OpenKey('Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\' + FConfig.AppID, True) then
     begin
-      Reg.WriteString('DisplayName', APP_DISPLAY_NAME);
+      Reg.WriteString('DisplayName', FConfig.AppDisplayName);
       Reg.CloseKey;
     end;
   finally
@@ -121,21 +177,26 @@ var
   PropVariant: TPropVariant;
   PathBuffer: array[0..MAX_PATH-1] of Char;
 begin
-  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer)) then
+  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer[0])) then
     RutaMenuInicio := PathBuffer
   else
     Exit;
-  RutaAccesoDirecto := TPath.Combine(RutaMenuInicio, APP_DISPLAY_NAME + '.lnk');
+  RutaAccesoDirecto := TPath.Combine(RutaMenuInicio, FConfig.AppDisplayName + '.lnk');
   if FileExists(RutaAccesoDirecto) then
     Exit;
+
   CoInitialize(nil);
   try
     if Succeeded(CoCreateInstance(CLSID_ShellLink, nil, CLSCTX_INPROC_SERVER, IID_IShellLinkW, ShellLink)) then
     begin
       ShellLink.SetPath(PChar(Application.ExeName));
+      if (FConfig.IconoNotificacion <> '') and FileExists(FConfig.IconoNotificacion) then
+        ShellLink.SetIconLocation(PChar(FConfig.IconoNotificacion), 0);
+
       if Succeeded(ShellLink.QueryInterface(IID_IPropertyStore, PropStore)) then
       begin
-        OleCheck(InitPropVariantFromString(APP_ID, PropVariant));
+        // <<< CORRECCIÓN: Se realiza la conversión de tipo de String a PChar >>>
+        OleCheck(InitPropVariantFromString(PChar(FConfig.AppID), PropVariant));
         OleCheck(PropStore.SetValue(PKEY_AppUserModel_ID, PropVariant));
         OleCheck(PropStore.Commit);
         PropVariantClear(PropVariant);
@@ -175,11 +236,11 @@ var
 begin
   ContenidoJSON := TStringList.Create;
   try
-    ContenidoJSON.LoadFromFile(FRutaArchivoConfig, TEncoding.UTF8);
+    ContenidoJSON.LoadFromFile(FRutaArchivoMensaje, TEncoding.UTF8);
     DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
     if not Assigned(DatosJSON) then
     begin
-      EscribirLog('El contenido del fichero de configuración no es un JSON válido.', True);
+      EscribirLog('El contenido del fichero de mensaje no es un JSON válido.', True);
       Exit;
     end;
     try
@@ -197,7 +258,7 @@ begin
       begin
         Notificacion := CentroNotificaciones.CreateNotification;
         try
-          Notificacion.Name := APP_ID;
+          Notificacion.Name := FConfig.AppID;
           Notificacion.Title := Titulo;
           Notificacion.AlertBody := StringReplace(Cuerpo, '\n', #13#10, [rfReplaceAll]);
           CentroNotificaciones.PresentNotification(Notificacion);
@@ -218,90 +279,58 @@ end;
 procedure TformNotificacionesWindows.MostrarNotificacionPowerShell(const Titulo, Cuerpo: string; DatosJSON: TJSONObject);
 var
   ScriptPS, ToastTemplateXML, LaunchAttribute, DurationAttribute, AccionPrincipalXML,
-  BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, CuerpoPS,
-  RutaImagenHero, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
+  BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, LogoImageXML, CuerpoPS,
+  RutaImagenLogo, RutaImagenArriba, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
 begin
-  RutaImagenHero := DatosJSON.GetValue<string>('imagen', '');
-  if (RutaImagenHero <> '') and FileExists(RutaImagenHero) then
-    RutaImagenHero := TPath.GetFullPath(RutaImagenHero)
-  else
-    RutaImagenHero := '';
-
+  RutaImagenLogo := DatosJSON.GetValue<string>('imagen_logo', '');
+  if (RutaImagenLogo <> '') and FileExists(RutaImagenLogo) then RutaImagenLogo := TPath.GetFullPath(RutaImagenLogo) else RutaImagenLogo := '';
+  RutaImagenArriba := DatosJSON.GetValue<string>('imagen_arriba', '');
+  if (RutaImagenArriba <> '') and FileExists(RutaImagenArriba) then RutaImagenArriba := TPath.GetFullPath(RutaImagenArriba) else RutaImagenArriba := '';
   RutaImagenInline := DatosJSON.GetValue<string>('imagen_inline', '');
-  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then
-    RutaImagenInline := TPath.GetFullPath(RutaImagenInline)
-  else
-    RutaImagenInline := '';
-
+  if (RutaImagenInline <> '') and FileExists(RutaImagenInline) then RutaImagenInline := TPath.GetFullPath(RutaImagenInline) else RutaImagenInline := '';
   PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
   AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
 
   LaunchAttribute := '';
-  if AccionPrincipal <> '' then
-    LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
-
-  if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then
-    DurationAttribute := ' duration="long"'
-  else
-    DurationAttribute := '';
-
+  if AccionPrincipal <> '' then LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
+  if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then DurationAttribute := ' duration="long"' else DurationAttribute := '';
+  LogoImageXML := '';
+  if RutaImagenLogo <> '' then LogoImageXML := '            <image placement="appLogoOverride" src="$ImagenLogo"/>' + #13#10;
   HeroImageXML := '';
-  if RutaImagenHero <> '' then
-  begin
-    if SameText(DatosJSON.GetValue<string>('posicion_imagen', 'izquierda'), 'arriba') then
-      HeroImageXML := '            <image placement="hero" src="$ImagenHero"/>' + #13#10
-    else
-      HeroImageXML := '            <image placement="appLogoOverride" src="$ImagenHero"/>' + #13#10;
-  end;
-
+  if RutaImagenArriba <> '' then HeroImageXML := '            <image placement="hero" src="$ImagenArriba"/>' + #13#10;
   InlineImageXML := '';
-  if RutaImagenInline <> '' then
-    InlineImageXML := '            <image src="$ImagenInline"/>' + #13#10;
-
+  if RutaImagenInline <> '' then InlineImageXML := '            <image src="$ImagenInline"/>' + #13#10;
   PieXML := '';
-  if PieNotificacion <> '' then
-    PieXML := '            <text placement="attribution">$PieNotificacion</text>' + #13#10;
-
+  if PieNotificacion <> '' then PieXML := '            <text placement="attribution">$PieNotificacion</text>' + #13#10;
   AccionPrincipalXML := '';
-  if AccionPrincipal <> '' then
-    AccionPrincipalXML := '        <action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>' + #13#10;
-
+  if AccionPrincipal <> '' then AccionPrincipalXML := '        <action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>' + #13#10;
   BotonCerrarXML := '';
-  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then
-    BotonCerrarXML := '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10;
+  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then BotonCerrarXML := '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10;
 
   ToastTemplateXML :=
     '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
     '    <visual>' + #13#10 +
     '        <binding template="ToastGeneric">' + #13#10 +
-                 HeroImageXML +
+                 LogoImageXML + HeroImageXML +
     '            <text>$Titulo</text>' + #13#10 +
     '            <text>$Cuerpo</text>' + #13#10 +
-                 InlineImageXML +
-                 PieXML +
+                 InlineImageXML + PieXML +
     '        </binding>' + #13#10 +
     '    </visual>';
-
   if (AccionPrincipalXML <> '') or (BotonCerrarXML <> '') then
     ToastTemplateXML := ToastTemplateXML + #13#10 + '    <actions>' + #13#10 + AccionPrincipalXML + BotonCerrarXML + '    </actions>';
   ToastTemplateXML := ToastTemplateXML + #13#10 + '</toast>';
 
-  // <<< CORRECCIÓN DEFINITIVA: Se prepara el cuerpo para PowerShell >>>
-  // 1. Reemplazar \n con el carácter de escape `n de PowerShell.
-  // 2. Escapar las comillas simples ' por '''.
-  // 3. Escapar las comillas dobles " por `" para poder usar una cadena con comillas dobles.
-  CuerpoPS := StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]);
-  CuerpoPS := StringReplace(CuerpoPS, '"', '`"', [rfReplaceAll]);
-
+  CuerpoPS := StringReplace(StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]), '"', '`"', [rfReplaceAll]);
   ScriptPS :=
     '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +
-    // Se usa una cadena con comillas dobles para que PowerShell interprete `n como salto de línea
     '$Cuerpo = "' + CuerpoPS + '";' + #13#10 +
-    '$ImagenHero = ''' + RutaImagenHero.Replace('''', '''''') + ''';' + #13#10 +
+    '$ImagenLogo = ''' + RutaImagenLogo.Replace('''', '''''') + ''';' + #13#10 +
+    '$ImagenArriba = ''' + RutaImagenArriba.Replace('''', '''''') + ''';' + #13#10 +
     '$ImagenInline = ''' + RutaImagenInline.Replace('''', '''''') + ''';' + #13#10 +
     '$PieNotificacion = ''' + PieNotificacion.Replace('''', '''''') + ''';' + #13#10 +
     '$AccionPrincipal = ''' + AccionPrincipal.Replace('''', '''''') + ''';' + #13#10 +
-    '$AppId = ''' + APP_ID + ''';' + #13#10 +
+    '$AppId = ''' + FConfig.AppID + ''';' + #13#10 +
     '$ToastTemplate = @"' + #13#10 + ToastTemplateXML + #13#10 + '"@' + #13#10 +
     '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +
     '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;' + #13#10 +
@@ -365,7 +394,7 @@ begin
       begin
         if TryStrToDateTime((Item as TJSONObject).GetValue<string>('fecha', ''), FechaNotificacion, FS) then
         begin
-          if MinutesBetween(Now, FechaNotificacion) <= MINUTOS_LIMITE_DUPLICADOS then
+          if MinutesBetween(Now, FechaNotificacion) <= FConfig.MinutosLimiteDuplicados then
           begin
             Result := True;
             Exit;
