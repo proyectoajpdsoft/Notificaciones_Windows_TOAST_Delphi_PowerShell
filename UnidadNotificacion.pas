@@ -10,7 +10,6 @@ uses
   Vcl.Forms, Vcl.ExtCtrls, Vcl.Controls;
 
 const
-  // <<< CORRECCIÓN: Se restauran las constantes de GUIDs y Propiedades >>>
   IID_IPersistFile: TGUID = '{0000010b-0000-0000-C000-000000000046}';
   PKEY_AppUserModel_ID: TPropertyKey = (
     fmtid: '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
@@ -18,11 +17,13 @@ const
   );
 
 type
+  // Almacena la configuración global cargada desde config.json.
   TAppConfig = record
     AppID: string;
     AppDisplayName: string;
     MinutosLimiteDuplicados: Integer;
     IconoNotificacion: string;
+    RutaXmlTemplate: string;
   end;
 
   TformNotificacionesWindows = class(TForm)
@@ -57,6 +58,8 @@ implementation
 
 procedure TformNotificacionesWindows.CreateParams(var Params: TCreateParams);
 begin
+  // Se sobreescribe este método para eliminar el estilo WS_VISIBLE antes de que
+  // la ventana se cree, asegurando que el formulario nunca sea visible.
   inherited CreateParams(Params);
   Params.Style := Params.Style and not WS_VISIBLE;
 end;
@@ -87,6 +90,9 @@ begin
 
     CrearAccesoDirectoConAppID;
 
+    // Se usa un temporizador corto para desacoplar la lógica principal del evento
+    // FormCreate, permitiendo que el formulario se cargue completamente en memoria
+    // antes de ejecutar la acción principal y cerrar la aplicación.
     Temporizador.Interval := 100;
     Temporizador.Enabled := True;
   except
@@ -101,8 +107,8 @@ end;
 procedure TformNotificacionesWindows.CargarConfiguracion;
 var
   RutaConfig: string;
-  ContenidoJSON: TStringList;
   DatosJSON: TJSONObject;
+  TemplateContent: TStringList;
 begin
   RutaConfig := TPath.Combine(ExtractFilePath(Application.ExeName), 'config.json');
 
@@ -115,29 +121,49 @@ begin
       DatosJSON.AddPair('app_display_name', 'Notificaciones de ProyectoA');
       DatosJSON.AddPair('minutos_limite_duplicados', TJSONNumber.Create(120));
       DatosJSON.AddPair('icono_notificacion', '');
+      DatosJSON.AddPair('ruta_xml_template', 'notificacion_template.xml');
       TFile.WriteAllText(RutaConfig, DatosJSON.ToJSON);
     finally
       DatosJSON.Free;
     end;
   end;
 
-  ContenidoJSON := TStringList.Create;
-  try
-    ContenidoJSON.LoadFromFile(RutaConfig, TEncoding.UTF8);
-    DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
-    if Assigned(DatosJSON) then
-    begin
-      try
-        FConfig.AppID := DatosJSON.GetValue<string>('app_id', 'Default.AppID');
-        FConfig.AppDisplayName := DatosJSON.GetValue<string>('app_display_name', 'Default Display Name');
-        FConfig.MinutosLimiteDuplicados := DatosJSON.GetValue<Integer>('minutos_limite_duplicados', 120);
-        FConfig.IconoNotificacion := DatosJSON.GetValue<string>('icono_notificacion', '');
-      finally
-        DatosJSON.Free;
-      end;
+  DatosJSON := TJSONObject.ParseJSONValue(TFile.ReadAllText(RutaConfig)) as TJSONObject;
+  if Assigned(DatosJSON) then
+  begin
+    try
+      FConfig.AppID := DatosJSON.GetValue<string>('app_id', 'Default.AppID');
+      FConfig.AppDisplayName := DatosJSON.GetValue<string>('app_display_name', 'Default Display Name');
+      FConfig.MinutosLimiteDuplicados := DatosJSON.GetValue<Integer>('minutos_limite_duplicados', 120);
+      FConfig.IconoNotificacion := DatosJSON.GetValue<string>('icono_notificacion', '');
+      FConfig.RutaXmlTemplate := TPath.Combine(ExtractFilePath(Application.ExeName), DatosJSON.GetValue<string>('ruta_xml_template', 'notificacion_template.xml'));
+    finally
+      DatosJSON.Free;
     end;
-  finally
-    ContenidoJSON.Free;
+  end;
+
+  if not FileExists(FConfig.RutaXmlTemplate) then
+  begin
+    EscribirLog('No se encontró fichero de plantilla XML. Creando por defecto.');
+    TemplateContent := TStringList.Create;
+    try
+      TemplateContent.Add('<toast##ToastAttributes##>');
+      TemplateContent.Add('    <visual>');
+      TemplateContent.Add('        <binding template="ToastGeneric">');
+      TemplateContent.Add('##LogoImageXML##');
+      TemplateContent.Add('##HeroImageXML##');
+      TemplateContent.Add('            <text>$Titulo</text>');
+      TemplateContent.Add('            <text>$Cuerpo</text>');
+      TemplateContent.Add('##InlineImageXML##');
+      TemplateContent.Add('##PieXML##');
+      TemplateContent.Add('        </binding>');
+      TemplateContent.Add('    </visual>');
+      TemplateContent.Add('##ActionsXML##');
+      TemplateContent.Add('</toast>');
+      TemplateContent.SaveToFile(FConfig.RutaXmlTemplate);
+    finally
+      TemplateContent.Free;
+    end;
   end;
 end;
 
@@ -195,7 +221,6 @@ begin
 
       if Succeeded(ShellLink.QueryInterface(IID_IPropertyStore, PropStore)) then
       begin
-        // <<< CORRECCIÓN: Se realiza la conversión de tipo de String a PChar >>>
         OleCheck(InitPropVariantFromString(PChar(FConfig.AppID), PropVariant));
         OleCheck(PropStore.SetValue(PKEY_AppUserModel_ID, PropVariant));
         OleCheck(PropStore.Commit);
@@ -280,8 +305,10 @@ procedure TformNotificacionesWindows.MostrarNotificacionPowerShell(const Titulo,
 var
   ScriptPS, ToastTemplateXML, LaunchAttribute, DurationAttribute, AccionPrincipalXML,
   BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, LogoImageXML, CuerpoPS,
-  RutaImagenLogo, RutaImagenArriba, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
+  RutaImagenLogo, RutaImagenArriba, RutaImagenInline, PieNotificacion, AccionPrincipal,
+  ToastAttributes, ActionsXML: string;
 begin
+  // --- PREPARACIÓN DE VARIABLES DE POWERSHELL ---
   RutaImagenLogo := DatosJSON.GetValue<string>('imagen_logo', '');
   if (RutaImagenLogo <> '') and FileExists(RutaImagenLogo) then RutaImagenLogo := TPath.GetFullPath(RutaImagenLogo) else RutaImagenLogo := '';
   RutaImagenArriba := DatosJSON.GetValue<string>('imagen_arriba', '');
@@ -291,36 +318,40 @@ begin
   PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
   AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
 
+  // --- PREPARACIÓN DE FRAGMENTOS XML (O CADENAS VACÍAS SI NO APLICAN) ---
   LaunchAttribute := '';
   if AccionPrincipal <> '' then LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
   if SameText(DatosJSON.GetValue<string>('duracion', 'corta'), 'larga') then DurationAttribute := ' duration="long"' else DurationAttribute := '';
   LogoImageXML := '';
-  if RutaImagenLogo <> '' then LogoImageXML := '            <image placement="appLogoOverride" src="$ImagenLogo"/>' + #13#10;
+  if RutaImagenLogo <> '' then LogoImageXML := '##LogoImageXML##';
   HeroImageXML := '';
-  if RutaImagenArriba <> '' then HeroImageXML := '            <image placement="hero" src="$ImagenArriba"/>' + #13#10;
+  if RutaImagenArriba <> '' then HeroImageXML := '##HeroImageXML##';
   InlineImageXML := '';
-  if RutaImagenInline <> '' then InlineImageXML := '            <image src="$ImagenInline"/>' + #13#10;
+  if RutaImagenInline <> '' then InlineImageXML := '##InlineImageXML##';
   PieXML := '';
-  if PieNotificacion <> '' then PieXML := '            <text placement="attribution">$PieNotificacion</text>' + #13#10;
+  if PieNotificacion <> '' then PieXML := '##PieXML##';
   AccionPrincipalXML := '';
-  if AccionPrincipal <> '' then AccionPrincipalXML := '        <action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>' + #13#10;
+  if AccionPrincipal <> '' then AccionPrincipalXML := '<action content="Abrir" arguments="$AccionPrincipal" activationType="protocol"/>';
   BotonCerrarXML := '';
-  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then BotonCerrarXML := '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10;
+  if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then BotonCerrarXML := '<action content="Cerrar" arguments="dismiss" activationType="system"/>';
 
-  ToastTemplateXML :=
-    '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
-    '    <visual>' + #13#10 +
-    '        <binding template="ToastGeneric">' + #13#10 +
-                 LogoImageXML + HeroImageXML +
-    '            <text>$Titulo</text>' + #13#10 +
-    '            <text>$Cuerpo</text>' + #13#10 +
-                 InlineImageXML + PieXML +
-    '        </binding>' + #13#10 +
-    '    </visual>';
+  // --- LECTURA Y REEMPLAZO EN LA PLANTILLA ---
+  ToastTemplateXML := TFile.ReadAllText(FConfig.RutaXmlTemplate);
+  ToastAttributes := DurationAttribute + LaunchAttribute;
+
   if (AccionPrincipalXML <> '') or (BotonCerrarXML <> '') then
-    ToastTemplateXML := ToastTemplateXML + #13#10 + '    <actions>' + #13#10 + AccionPrincipalXML + BotonCerrarXML + '    </actions>';
-  ToastTemplateXML := ToastTemplateXML + #13#10 + '</toast>';
+    ActionsXML := #13#10 + '    <actions>' + #13#10 + '        ' + AccionPrincipalXML + #13#10 + '        ' + BotonCerrarXML + #13#10 + '    </actions>'
+  else
+    ActionsXML := '';
 
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##ToastAttributes##', ToastAttributes, [rfReplaceAll]);
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##LogoImageXML##', IfThen(LogoImageXML<>'', '<image placement="appLogoOverride" src="$ImagenLogo"/>', ''), [rfReplaceAll]);
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##HeroImageXML##', IfThen(HeroImageXML<>'', '<image placement="hero" src="$ImagenArriba"/>', ''), [rfReplaceAll]);
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##InlineImageXML##', IfThen(InlineImageXML<>'', '<image src="$ImagenInline"/>', ''), [rfReplaceAll]);
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##PieXML##', IfThen(PieXML<>'', '<text placement="attribution">$PieNotificacion</text>', ''), [rfReplaceAll]);
+  ToastTemplateXML := StringReplace(ToastTemplateXML, '##ActionsXML##', ActionsXML, [rfReplaceAll]);
+
+  // --- CONSTRUCCIÓN DEL SCRIPT DE POWERSHELL ---
   CuerpoPS := StringReplace(StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]), '"', '`"', [rfReplaceAll]);
   ScriptPS :=
     '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +

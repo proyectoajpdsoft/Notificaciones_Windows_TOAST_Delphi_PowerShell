@@ -1,0 +1,13 @@
+<toast##ToastAttributes##>
+    <visual>
+        <binding template="ToastGeneric">
+##LogoImageXML##
+##HeroImageXML##
+            <text>$Titulo</text>
+            <text>$Cuerpo</text>
+##InlineImageXML##
+##PieXML##
+        </binding>
+    </visual>
+##ActionsXML##
+</toast>
