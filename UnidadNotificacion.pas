@@ -70,7 +70,7 @@ begin
     FRutaArchivoConfig := ParamStr(1);
     if not FileExists(FRutaArchivoConfig) then
     begin
-      EscribirLog('El archivo JSON "' + FRutaArchivoConfig + '" no existe.', True);
+      EscribirLog('El archivo de configuración "' + FRutaArchivoConfig + '" no existe.', True);
       Application.Terminate;
       Exit;
     end;
@@ -79,7 +79,7 @@ begin
   except
     on E: Exception do
     begin
-      EscribirLog('Error durante la inicialización: ' + E.Message, True);
+      EscribirLog('Error fatal durante la inicialización: ' + E.Message, True);
       Vcl.Forms.Application.Terminate;
     end;
   end;
@@ -121,7 +121,7 @@ var
   PropVariant: TPropVariant;
   PathBuffer: array[0..MAX_PATH-1] of Char;
 begin
-  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer[0])) then
+  if Succeeded(SHGetFolderPath(0, CSIDL_STARTMENU, 0, SHGFP_TYPE_CURRENT, @PathBuffer)) then
     RutaMenuInicio := PathBuffer
   else
     Exit;
@@ -179,7 +179,7 @@ begin
     DatosJSON := TJSONObject.ParseJSONValue(ContenidoJSON.Text) as TJSONObject;
     if not Assigned(DatosJSON) then
     begin
-      EscribirLog('El contenido del fichero JSON no es válido.', True);
+      EscribirLog('El contenido del fichero de configuración no es un JSON válido.', True);
       Exit;
     end;
     try
@@ -187,7 +187,7 @@ begin
       Cuerpo := DatosJSON.GetValue<string>('cuerpo');
       if HaSidoMostradaRecientemente(Titulo, Cuerpo) then
       begin
-        EscribirLog(Format('Notificación ya mostrada en el límite de tiempo, no se mostrará esta vez: "%s"', [Titulo]));
+        EscribirLog(Format('Notificación duplicada ("%s") dentro del límite de tiempo.', [Titulo]));
         Exit;
       end;
       TipoNotificacion := DatosJSON.GetValue<string>('tipo_notificacion', 'normal');
@@ -206,7 +206,7 @@ begin
         end;
       end;
       RegistrarNotificacionEnHistorial(Titulo, Cuerpo);
-      EscribirLog('Notificación enviada para mostrar, de tipo: ' + TipoNotificacion + ').');
+      EscribirLog('Notificación enviada (Tipo: ' + TipoNotificacion + ').');
     finally
       DatosJSON.Free;
     end;
@@ -221,7 +221,6 @@ var
   BotonCerrarXML, PieXML, HeroImageXML, InlineImageXML, CuerpoPS,
   RutaImagenHero, RutaImagenInline, PieNotificacion, AccionPrincipal: string;
 begin
-  // PREPARACIÓN DE VARIABLES DE POWERSHELL
   RutaImagenHero := DatosJSON.GetValue<string>('imagen', '');
   if (RutaImagenHero <> '') and FileExists(RutaImagenHero) then
     RutaImagenHero := TPath.GetFullPath(RutaImagenHero)
@@ -237,7 +236,6 @@ begin
   PieNotificacion := DatosJSON.GetValue<string>('pie_notificacion', '');
   AccionPrincipal := DatosJSON.GetValue<string>('accion_principal', '');
 
-  // PREPARACIÓN DE FRAGMENTOS XML
   LaunchAttribute := '';
   if AccionPrincipal <> '' then
     LaunchAttribute := ' launch="$AccionPrincipal" activationType="protocol"';
@@ -272,7 +270,6 @@ begin
   if DatosJSON.GetValue<Boolean>('mostrar_boton_cerrar', False) then
     BotonCerrarXML := '        <action content="Cerrar" arguments="dismiss" activationType="system"/>' + #13#10;
 
-  // CONSTRUCCIÓN DEL XML COMPLETO
   ToastTemplateXML :=
     '<toast' + DurationAttribute + LaunchAttribute + '>' + #13#10 +
     '    <visual>' + #13#10 +
@@ -289,14 +286,17 @@ begin
     ToastTemplateXML := ToastTemplateXML + #13#10 + '    <actions>' + #13#10 + AccionPrincipalXML + BotonCerrarXML + '    </actions>';
   ToastTemplateXML := ToastTemplateXML + #13#10 + '</toast>';
 
-  // CONSTRUCCIÓN DEL SCRIPT DE POWERSHELL
-  CuerpoPS := StringReplace(Cuerpo, #13#10, '`n', [rfReplaceAll]); // Reemplaza CR+LF
-  CuerpoPS := StringReplace(CuerpoPS, #10, '`n', [rfReplaceAll]);   // Reemplaza solo LF
-  CuerpoPS := CuerpoPS.Replace('''', ''''''); // Escapa comillas simples
+  // <<< CORRECCIÓN DEFINITIVA: Se prepara el cuerpo para PowerShell >>>
+  // 1. Reemplazar \n con el carácter de escape `n de PowerShell.
+  // 2. Escapar las comillas simples ' por '''.
+  // 3. Escapar las comillas dobles " por `" para poder usar una cadena con comillas dobles.
+  CuerpoPS := StringReplace(Cuerpo, '\n', '`n', [rfReplaceAll]);
+  CuerpoPS := StringReplace(CuerpoPS, '"', '`"', [rfReplaceAll]);
 
   ScriptPS :=
     '$Titulo = ''' + Titulo.Replace('''', '''''') + ''';' + #13#10 +
-    '$Cuerpo = ''' + CuerpoPS + ''';' + #13#10 +
+    // Se usa una cadena con comillas dobles para que PowerShell interprete `n como salto de línea
+    '$Cuerpo = "' + CuerpoPS + '";' + #13#10 +
     '$ImagenHero = ''' + RutaImagenHero.Replace('''', '''''') + ''';' + #13#10 +
     '$ImagenInline = ''' + RutaImagenInline.Replace('''', '''''') + ''';' + #13#10 +
     '$PieNotificacion = ''' + PieNotificacion.Replace('''', '''''') + ''';' + #13#10 +
